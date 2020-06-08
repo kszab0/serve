@@ -1,0 +1,3 @@
+pattern: "**/*.go"
+build: go build -o serve cmd/serve/main.go
+run: ./serve
