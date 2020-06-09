@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"archive/zip"
 	"flag"
 	"fmt"
 	"io"
@@ -66,6 +67,11 @@ func (app *app) handler() http.HandlerFunc {
 				log.Println("Error:", err)
 				http.Error(w, "File not found", http.StatusNotFound)
 			}
+		case http.MethodPost:
+			if err := app.handlePost(w, r); err != nil {
+				log.Println("Error:", err)
+				http.Error(w, fmt.Sprintf("Error: %v", err), http.StatusInternalServerError)
+			}
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -120,25 +126,32 @@ const listTemplate = `<!DOCTYPE html>
 		* { font-family: monospace; }
 		body { display: flex; flex-direction: column; align-items: center; }
 		th { text-align: left; }
-		th:before { content: ''; display: block; min-width: 75px; }
+		th:not(:first-child):before { content: ''; display: block; min-width: 75px; }
+		table { margin-bottom: 16px; }
     </style>
 </head>
 <body>
 	<h1>Index of {{.Path}}</h1>
-	<table>
-		<tr>
-			<th>Name</th>
-			<th>Size</th>
-			<th>Last modified</th>
-		</tr>
-	{{range .Files}}
-		<tr>
-			<td><a href="{{ .Path }}">{{ .Name }}</a></td>
-			<td>{{if not .IsDir}} {{ .Size }} {{end}}</td>
-			<td>{{if not .IsDir}} {{ .ModTime }} {{end}}</td>
-		</tr>
-	{{end}}
-	</table>
+	<form method="POST">
+		<table>
+			<tr>
+				<th />
+				<th>Name</th>
+				<th>Size</th>
+				<th>Last modified</th>
+			</tr>
+		{{range .Files}}
+			<tr>
+				<td><input type="checkbox" name="files" value="{{.Name}}" /></td>
+				<td><a href="{{ .Path }}">{{ .Name }}</a></td>
+				<td>{{if not .IsDir}} {{ .Size }} {{end}}</td>
+				<td>{{if not .IsDir}} {{ .ModTime }} {{end}}</td>
+			</tr>
+		{{end}}
+		</table>
+
+		<input type="submit" value="Download zip" />
+	</form>
 </body>
 </html>`
 
@@ -163,4 +176,84 @@ func serveDir(w io.Writer, path string, files []os.FileInfo) error {
 		Path:  path,
 		Files: fs,
 	})
+}
+
+func (app *app) handlePost(w http.ResponseWriter, r *http.Request) error {
+	if err := r.ParseForm(); err != nil {
+		return err
+	}
+
+	dir := filepath.Join(app.dir, filepath.Clean(r.URL.Path))
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, dirname(dir)))
+
+	return archive(w, dir, r.Form["files"])
+}
+
+func dirname(dir string) string {
+	base := filepath.Base(dir)
+	if base == "." || base == "/" {
+		base = "root"
+	}
+	return base
+}
+
+func archive(w io.Writer, dir string, filenames []string) error {
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	fileNames := filenames
+	if len(fileNames) == 0 {
+		if err := addToArchive(zw, dir, dir); err != nil {
+			return err
+		}
+	}
+
+	for _, name := range fileNames {
+		if err := addToArchive(zw, dir, filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func addToArchive(zw *zip.Writer, dir, path string) error {
+	relPath, err := filepath.Rel(dir, path)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	if fi.IsDir() {
+		fis, err := ioutil.ReadDir(path)
+		if err != nil {
+			return err
+		}
+
+		for _, fi := range fis {
+			if err := addToArchive(zw, dir, filepath.Join(path, fi.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	zf, err := zw.Create(relPath)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(zf, f)
+	return err
 }
