@@ -33,7 +33,7 @@ type app struct {
 }
 
 func (app *app) fromArgs(args []string) error {
-	flags := flag.NewFlagSet("hostr", flag.ContinueOnError)
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.StringVar(&app.addr, "a", "localhost:9876", "http address")
 	flags.BoolVar(&app.quiet, "q", false, "use quiet mode - don't display logs")
 	if err := flags.Parse(args); err != nil {
